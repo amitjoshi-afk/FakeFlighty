@@ -10,7 +10,7 @@ import java.time.format.DateTimeFormatter
 /**
  * Minimal iCalendar (RFC 5545) reader for flight events.
  * Handles line folding, escaped text, UTC times ("...Z"), TZID times, and all-day dates.
- * Windows zone names that Outlook writes (e.g. "Singapore Standard Time") fall back to [defaultZone].
+ * Common Windows zone names that Outlook writes (e.g. "Singapore Standard Time") are mapped to IANA ids.
  */
 object IcsSource {
 
@@ -59,6 +59,7 @@ object IcsSource {
     private fun toEvent(p: Map<String, Pair<Map<String, String>, String>>, zone: ZoneId): CalendarEvent? {
         val start = p["DTSTART"]?.let { time(it, zone) } ?: return null
         val end = p["DTEND"]?.let { time(it, zone) } ?: start
+        val allDay = p["DTSTART"]?.let { (params, v) -> params["VALUE"] == "DATE" || v.length == 8 } ?: false
         return CalendarEvent(
             id = p["UID"]?.second ?: "ics-${start.toEpochSecond()}",
             subject = unescape(p["SUMMARY"]?.second.orEmpty()),
@@ -66,8 +67,34 @@ object IcsSource {
             location = p["LOCATION"]?.second?.let(::unescape),
             start = start,
             end = end,
+            startZone = p["DTSTART"]?.let(::zoneOf),
+            endZone = p["DTEND"]?.let(::zoneOf),
+            allDay = allDay,
         )
     }
+
+    /** IANA zone of a time property, or null for UTC/floating times and Windows zone names. */
+    private fun zoneOf(prop: Pair<Map<String, String>, String>): String? =
+        prop.first["TZID"]?.let(::resolveZone)?.id
+
+    /**
+     * Outlook writes Windows zone names ("Singapore Standard Time"). Common ones are mapped to IANA ids
+     * following the Unicode CLDR windowsZones table; anything else falls back to the phone's zone.
+     */
+    private val windowsZones = mapOf(
+        "Singapore Standard Time" to "Asia/Singapore", "China Standard Time" to "Asia/Shanghai",
+        "Tokyo Standard Time" to "Asia/Tokyo", "Korea Standard Time" to "Asia/Seoul",
+        "Taipei Standard Time" to "Asia/Taipei", "SE Asia Standard Time" to "Asia/Bangkok",
+        "India Standard Time" to "Asia/Calcutta", "Arabian Standard Time" to "Asia/Dubai",
+        "GMT Standard Time" to "Europe/London", "W. Europe Standard Time" to "Europe/Berlin",
+        "Romance Standard Time" to "Europe/Paris", "Central Europe Standard Time" to "Europe/Budapest",
+        "Eastern Standard Time" to "America/New_York", "Central Standard Time" to "America/Chicago",
+        "Mountain Standard Time" to "America/Denver", "Pacific Standard Time" to "America/Los_Angeles",
+        "AUS Eastern Standard Time" to "Australia/Sydney", "UTC" to "UTC",
+    )
+
+    fun resolveZone(tzid: String): ZoneId? =
+        runCatching { ZoneId.of(tzid) }.getOrNull() ?: windowsZones[tzid]?.let { ZoneId.of(it) }
 
     private fun time(prop: Pair<Map<String, String>, String>, fallback: ZoneId): OffsetDateTime? {
         val (params, value) = prop
@@ -78,7 +105,7 @@ object IcsSource {
                 value.endsWith("Z") ->
                     LocalDateTime.parse(value.dropLast(1), dateTime).atOffset(ZoneOffset.UTC)
                 else -> {
-                    val zone = params["TZID"]?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: fallback
+                    val zone = params["TZID"]?.let(::resolveZone) ?: fallback
                     LocalDateTime.parse(value, dateTime).atZone(zone).toOffsetDateTime()
                 }
             }

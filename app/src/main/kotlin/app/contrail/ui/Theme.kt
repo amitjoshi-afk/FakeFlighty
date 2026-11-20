@@ -11,7 +11,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
-import app.contrail.core.model.FlightStatus
 
 // Contrail palette: warm paper, deep ink, and an ember accent for anything that needs attention.
 val Paper = Color(0xFFF6F1E7)
@@ -52,27 +51,4 @@ val ContrailType = Typography(
 @Composable
 fun ContrailTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = if (isSystemInDarkTheme()) Dark else Light, typography = ContrailType, content = content)
-}
-
-fun statusColor(s: FlightStatus, delayMin: Long?): Color = when {
-    s == FlightStatus.Canceled || s == FlightStatus.CanceledUncertain || s == FlightStatus.Diverted -> Ember
-    s == FlightStatus.Delayed || (delayMin ?: 0) >= 15 -> Amber
-    s == FlightStatus.Unknown -> Mist
-    else -> Sage
-}
-
-fun statusLabel(s: FlightStatus, delayMin: Long?): String = when (s) {
-    FlightStatus.Unknown -> "No live data"
-    FlightStatus.Expected -> if ((delayMin ?: 0) >= 5) "Delayed ${delayMin}m" else "On time"
-    FlightStatus.CheckIn -> "Check-in"
-    FlightStatus.Boarding -> "Boarding"
-    FlightStatus.GateClosed -> "Gate closed"
-    FlightStatus.Departed -> "Departed"
-    FlightStatus.EnRoute -> "In the air"
-    FlightStatus.Delayed -> delayMin?.takeIf { it > 0 }?.let { "Delayed ${it}m" } ?: "Delayed"
-    FlightStatus.Approaching -> "Approaching"
-    FlightStatus.Arrived -> "Landed"
-    FlightStatus.Canceled -> "Canceled"
-    FlightStatus.CanceledUncertain -> "May be canceled"
-    FlightStatus.Diverted -> "Diverted"
 }

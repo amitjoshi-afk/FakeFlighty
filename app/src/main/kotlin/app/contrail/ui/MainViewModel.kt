@@ -7,13 +7,13 @@ import androidx.lifecycle.viewModelScope
 import app.contrail.ContrailApp
 import app.contrail.core.importer.Confidence
 import app.contrail.core.importer.FlightCandidate
+import app.contrail.core.model.Flight
 import app.contrail.data.DeviceCalendarSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.time.LocalDate
 
 /** Candidates waiting for the user to tick which ones to import. */
 data class ImportReview(val source: String, val items: List<Pair<FlightCandidate, Boolean>>)
@@ -21,6 +21,7 @@ data class ImportReview(val source: String, val items: List<Pair<FlightCandidate
 class MainViewModel(app: Application) : AndroidViewModel(app) {
     val repo = (app as ContrailApp).repository
     val book = repo.book
+    val airports get() = repo.airports
 
     private val _message = MutableStateFlow<String?>(null)
     val message = _message.asStateFlow()
@@ -28,19 +29,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val _review = MutableStateFlow<ImportReview?>(null)
     val review = _review.asStateFlow()
 
-    private val _refreshing = MutableStateFlow(false)
-    val refreshing = _refreshing.asStateFlow()
+    private val _busy = MutableStateFlow(false)
+    val busy = _busy.asStateFlow()
 
     private val _calendars = MutableStateFlow<List<DeviceCalendarSource.DeviceCalendar>>(emptyList())
     val calendars = _calendars.asStateFlow()
+
+    init {
+        // Warm the airport database off the main thread.
+        viewModelScope.launch(Dispatchers.Default) { repo.airports.size }
+    }
 
     fun consumeMessage() { _message.value = null }
 
     fun loadCalendars() = viewModelScope.launch {
         val list = withContext(Dispatchers.IO) { repo.calendar.calendars() }
         _calendars.value = list
-        // First run: preselect calendars that look like Outlook ones.
-        if (repo.settings.calendarIds.isEmpty()) repo.settings.calendarIds = list.filter { it.isOutlook }.map { it.id }.toSet()
+        // First run: preselect calendars that look like Outlook ones, or all of them if none do.
+        if (repo.settings.calendarIds.isEmpty()) {
+            val outlook = list.filter { it.isOutlook }
+            repo.settings.calendarIds = (outlook.ifEmpty { list }).map { it.id }.toSet()
+        }
     }
 
     fun importFromCalendar() = viewModelScope.launch {
@@ -48,7 +57,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _message.value = "Choose which calendars to scan in Settings first."
             return@launch
         }
-        showReview("phone calendar", repo.candidatesFromCalendar())
+        _busy.value = true
+        val found = repo.candidatesFromCalendar()
+        _busy.value = false
+        showReview("calendar", found)
     }
 
     fun importFromIcs(uri: Uri) = viewModelScope.launch {
@@ -62,7 +74,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private fun showReview(source: String, found: List<FlightCandidate>) {
         if (found.isEmpty()) { _message.value = "No new flights found in your $source."; return }
         // Low-confidence matches start unticked so nothing odd gets imported silently.
-        _review.value = ImportReview(source, found.map { it to (it.confidence != Confidence.LOW) })
+        _review.value = ImportReview(source, found.sortedByDescending { it.date }.map { it to (it.confidence != Confidence.LOW) })
     }
 
     fun toggle(index: Int) {
@@ -77,38 +89,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _review.value = null
         if (picked.isEmpty()) return@launch
         repo.add(picked)
-        _message.value = "Added ${picked.size} flight${if (picked.size == 1) "" else "s"}."
-        refreshAll()
+        val missing = picked.count { it.origin == null || it.destination == null }
+        _message.value = "Added ${picked.size} flight${if (picked.size == 1) "" else "s"}." +
+            if (missing > 0) " $missing need airports filled in." else ""
     }
 
-    fun addManual(designator: String, date: LocalDate) = viewModelScope.launch {
-        val code = designator.replace(" ", "").uppercase()
-        val m = Regex("""^([A-Z0-9]{2})(\d{1,4})$""").find(code)
-        if (m == null) { _message.value = "Enter a flight number like SQ638."; return@launch }
-        val c = FlightCandidate("manual", m.groupValues[1], m.groupValues[2].trimStart('0').ifEmpty { "0" }, date, null, null, Confidence.HIGH)
-        repo.add(listOf(c))
-        refreshAll()
-    }
+    fun save(oldId: String?, f: Flight) = viewModelScope.launch { repo.save(oldId, f) }
 
     fun remove(id: String) = viewModelScope.launch { repo.remove(id) }
-
-    fun refreshAll() = viewModelScope.launch {
-        if (repo.settings.apiKey.isBlank()) {
-            _message.value = "Add your AeroDataBox key in Settings to get live status."
-            return@launch
-        }
-        _refreshing.value = true
-        val errors = mutableListOf<String>()
-        for (f in repo.flightsToWatch()) {
-            runCatching { repo.refresh(f.id) }.onFailure { errors += it.message ?: "Lookup failed" }
-        }
-        _refreshing.value = false
-        errors.firstOrNull()?.let { _message.value = it }
-    }
-
-    fun refreshOne(id: String) = viewModelScope.launch {
-        _refreshing.value = true
-        runCatching { repo.refresh(id) }.onFailure { _message.value = it.message }
-        _refreshing.value = false
-    }
 }

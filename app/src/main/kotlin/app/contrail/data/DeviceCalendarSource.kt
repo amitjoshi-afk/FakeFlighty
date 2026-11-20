@@ -47,12 +47,12 @@ class DeviceCalendarSource(private val context: Context) {
 
     /**
      * Uses the Instances table so recurring events are expanded and times are already resolved.
-     * Default window: one year back (for stats) and one year ahead (for upcoming trips).
+     * Default window: the last 15 years up to now, since Contrail is a travel history.
      */
     fun events(
         calendarIds: Set<Long>,
-        from: Instant = Instant.now().minusSeconds(365L * 86_400),
-        to: Instant = Instant.now().plusSeconds(365L * 86_400),
+        from: Instant = Instant.now().minusSeconds(15L * 366 * 86_400),
+        to: Instant = Instant.now(),
     ): List<CalendarEvent> {
         if (!hasPermission() || calendarIds.isEmpty()) return emptyList()
         val uri = CalendarContract.Instances.CONTENT_URI.buildUpon().also {
@@ -68,6 +68,8 @@ class DeviceCalendarSource(private val context: Context) {
             CalendarContract.Instances.END,
             CalendarContract.Instances.EVENT_TIMEZONE,
             CalendarContract.Instances.CALENDAR_ID,
+            CalendarContract.Instances.EVENT_END_TIMEZONE,
+            CalendarContract.Instances.ALL_DAY,
         )
         val zone = ZoneId.systemDefault()
         return query(context.contentResolver, uri, cols)?.use { c ->
@@ -75,6 +77,8 @@ class DeviceCalendarSource(private val context: Context) {
                 while (c.moveToNext()) {
                     if (c.getLong(7) !in calendarIds) continue
                     val tz = c.getString(6)?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: zone
+                    val endTz = c.getString(8)?.let { runCatching { ZoneId.of(it) }.getOrNull() } ?: tz
+                    val allDay = c.getInt(9) == 1
                     add(
                         CalendarEvent(
                             id = "device-${c.getLong(0)}-${c.getLong(4)}",
@@ -82,7 +86,10 @@ class DeviceCalendarSource(private val context: Context) {
                             body = c.getString(2).orEmpty(),
                             location = c.getString(3),
                             start = Instant.ofEpochMilli(c.getLong(4)).atZone(tz).toOffsetDateTime(),
-                            end = Instant.ofEpochMilli(c.getLong(5)).atZone(tz).toOffsetDateTime(),
+                            end = Instant.ofEpochMilli(c.getLong(5)).atZone(endTz).toOffsetDateTime(),
+                            startZone = tz.id,
+                            endZone = endTz.id,
+                            allDay = allDay,
                         )
                     )
                 }
